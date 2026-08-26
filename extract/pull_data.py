@@ -1,32 +1,36 @@
-import dotenv
 import os
 import requests
 import pandas as pd
+import dotenv
 
 dotenv.load_dotenv()
 
-def pull_data(start = None, end= None):
-    
-    api_key = os.getenv('eia_api_key')
-    if not api_key:
-        raise ValueError("EIA_API_KEY not found in environment")
+API_KEY = os.getenv("eia_api_key")
+URL = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
 
-    url = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
+
+def pull_data(start=None):
     params = {
-        "api_key": api_key,
+        "api_key": API_KEY,
         "frequency": "hourly",
         "data[0]": "value",
         "sort[0][column]": "period",
-        "sort[0][direction]": "desc",
-        "offset": 0,
+        "sort[0][direction]": "asc",
         "length": 5000,
+        "offset": 0,
     }
-    response = requests.get(url, params=params)
-    print(response.status_code)
-    data = response.json()
-    records = data['response']['data']
-    df = pd.DataFrame(records)
-    
-    return df
 
-data = pull_data()
+    if start:
+        params["start"] = start
+
+    response = requests.get(
+        URL,
+        params=params,
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    records = response.json()["response"]["data"]
+
+    return pd.DataFrame(records)

@@ -1,12 +1,12 @@
 from extract.pull_data import pull_data
-from load.load_bronze import load_bronze
+from load.load import load_bronze
 
 
 def run_pipeline():
     print("Extracting EIA data...")
 
     df = pull_data()
-
+    
     print(f"Extracted {len(df)} rows")
 
     print("Loading Bronze table...")

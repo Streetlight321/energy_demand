@@ -1,7 +1,7 @@
 import os
+import dotenv
 import requests
 import pandas as pd
-import dotenv
 
 dotenv.load_dotenv()
 

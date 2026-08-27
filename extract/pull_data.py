@@ -9,7 +9,7 @@ API_KEY = os.getenv("eia_api_key")
 URL = "https://api.eia.gov/v2/electricity/rto/region-data/data/"
 
 
-def pull_data(start=None):
+def pull_raw(start=None):
     params = {
         "api_key": API_KEY,
         "frequency": "hourly",

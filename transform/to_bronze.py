@@ -26,3 +26,4 @@ def to_bronze_pipe(df):
         pd.notna(df),
         None
     )
+    return df

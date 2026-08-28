@@ -1,5 +1,4 @@
 import os
-import pandas as pd
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -24,32 +23,10 @@ supabase: Client = create_client(
 
 
 def load_bronze(df, batch_size=500):
-    df = df.copy()
-
-    df = df.rename(
-        columns={
-            "respondent-name": "respondent_name",
-            "type-name": "type_name",
-            "value-units": "value_units",
-        }
-    )
-
-    df["period"] = (
-        pd.to_datetime(df["period"], utc=True)
-        .dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
-
-    df["value"] = pd.to_numeric(
-        df["value"],
-        errors="coerce"
-    )
-
-    # Convert NaN/NA to None so it becomes SQL NULL
-    df = df.astype(object).where(
-        pd.notna(df),
-        None
-    )
-
+    """
+    Upsert an already-transformed dataframe into bronze_eia_region_data.
+    Expects df to already be in bronze shape (see transform/to_bronze.py).
+    """
     records = df.to_dict(orient="records")
 
     for i in range(0, len(records), batch_size):

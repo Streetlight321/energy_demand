@@ -7,9 +7,12 @@ import numpy as np
 import pandas as pd
 
 from database.client import supabase
+from database.retry import DEFAULT_ATTEMPTS, run_with_retry
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DATE_FORMAT = "%Y-%m-%d"
+
+DEFAULT_BATCH_SIZE = 250
 
 
 def to_records(df, timestamp_columns=("period",), date_columns=()):
@@ -39,14 +42,32 @@ def to_records(df, timestamp_columns=("period",), date_columns=()):
     return df.to_dict(orient="records")
 
 
+def upsert_batch(batch, table, conflict_key, client=None):
+    """One upsert, retried on transient transport/gateway failures.
+
+    Always an upsert on the table's conflict key, so replaying a batch that
+    may have partially landed is safe.
+    """
+    client = client or supabase
+
+    return (
+        client
+        .table(table)
+        .upsert(batch, on_conflict=conflict_key)
+        .execute()
+    )
+
+
 def upsert_records(
     df,
     table,
     conflict_key,
     label,
-    batch_size=500,
+    batch_size=DEFAULT_BATCH_SIZE,
     timestamp_columns=("period",),
     date_columns=(),
+    attempts=DEFAULT_ATTEMPTS,
+    client=None,
 ):
     """Upsert a DataFrame in batches, printing concise progress."""
     records = to_records(
@@ -61,18 +82,16 @@ def upsert_records(
 
     for i in range(0, len(records), batch_size):
         batch = records[i:i + batch_size]
+        last_row = min(i + batch_size, len(records))
 
-        (
-            supabase
-            .table(table)
-            .upsert(batch, on_conflict=conflict_key)
-            .execute()
+        run_with_retry(
+            lambda batch=batch: upsert_batch(
+                batch, table, conflict_key, client=client
+            ),
+            description=f"{table} rows {i + 1}-{last_row}",
+            attempts=attempts,
         )
 
-        print(
-            f"Loaded "
-            f"{min(i + batch_size, len(records))}"
-            f"/{len(records)} {label} rows"
-        )
+        print(f"Loaded {last_row}/{len(records)} {label} rows")
 
     return len(records)

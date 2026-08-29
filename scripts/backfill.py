@@ -11,12 +11,14 @@ chunk is safe.
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from database.retry import backoff_delay, describe, is_transient  # noqa: E402
 from extract.window import format_period  # noqa: E402
 from pipeline import ingest_window  # noqa: E402
 
@@ -24,6 +26,10 @@ from pipeline import ingest_window  # noqa: E402
 DEFAULT_START = "2019-01-01T00"
 
 DEFAULT_CHUNK_DAYS = 30
+
+# Individual requests already retry. This is the outer net: if a whole window
+# still fails transiently, replay the window rather than losing hours of work.
+DEFAULT_WINDOW_ATTEMPTS = 3
 
 
 def iter_windows(start, end, chunk_days):
@@ -47,13 +53,68 @@ def iter_windows(start, end, chunk_days):
         cursor = chunk_end + pd.Timedelta(hours=1)
 
 
-def run_backfill(start, end, chunk_days=DEFAULT_CHUNK_DAYS):
+def ingest_with_retry(
+    window_start,
+    window_end,
+    attempts=DEFAULT_WINDOW_ATTEMPTS,
+    sleep=time.sleep,
+    ingest=None,
+):
+    """Ingest one window, replaying it on a transient failure.
+
+    Every write is an upsert, so a replayed window rewrites the rows that
+    already landed instead of duplicating them. Non-transient errors are
+    raised immediately - a missing table will not fix itself.
+    """
+    ingest = ingest or ingest_window
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return ingest(start=window_start, end=window_end)
+        except Exception as error:
+            if not is_transient(error) or attempt == attempts:
+                raise
+
+            delay = backoff_delay(attempt)
+
+            print(
+                f"Window {window_start} -> {window_end} failed "
+                f"({describe(error)}); replaying in {delay:.0f}s "
+                f"(attempt {attempt + 1}/{attempts})"
+            )
+
+            sleep(delay)
+
+
+def run_backfill(
+    start,
+    end,
+    chunk_days=DEFAULT_CHUNK_DAYS,
+    window_attempts=DEFAULT_WINDOW_ATTEMPTS,
+):
     total = 0
 
     for window_start, window_end in iter_windows(start, end, chunk_days):
         print(f"\n=== Backfilling {window_start} -> {window_end} ===")
 
-        counts = ingest_window(start=window_start, end=window_end)
+        try:
+            counts = ingest_with_retry(
+                window_start,
+                window_end,
+                attempts=window_attempts,
+            )
+        except Exception:
+            # Everything before this window is already committed, so say
+            # exactly where to pick up instead of restarting the whole run.
+            print(
+                f"\nBackfill stopped in window {window_start} -> "
+                f"{window_end}. {total} raw rows were ingested before it. "
+                f"Resume with:\n"
+                f"  uv run scripts/backfill.py --start {window_start} "
+                f"--end {format_period(end)} --chunk-days {chunk_days}"
+            )
+            raise
+
         total += counts["rows_extracted"]
 
     print(f"\nBackfill complete. {total} raw rows ingested.")
@@ -81,6 +142,15 @@ def parse_args(argv=None):
         default=DEFAULT_CHUNK_DAYS,
         help=f"Days per request window (default: {DEFAULT_CHUNK_DAYS})",
     )
+    parser.add_argument(
+        "--window-attempts",
+        type=int,
+        default=DEFAULT_WINDOW_ATTEMPTS,
+        help=(
+            "How many times to replay a window that fails transiently "
+            f"(default: {DEFAULT_WINDOW_ATTEMPTS})"
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -95,7 +165,12 @@ def main(argv=None):
         f"in {args.chunk_days}-day chunks"
     )
 
-    run_backfill(args.start, end, chunk_days=args.chunk_days)
+    run_backfill(
+        args.start,
+        end,
+        chunk_days=args.chunk_days,
+        window_attempts=args.window_attempts,
+    )
 
 
 if __name__ == "__main__":

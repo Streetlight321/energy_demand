@@ -1,6 +1,6 @@
 """Write path for the Gold tables: serialization and batched upserts only."""
 
-from load.records import upsert_records
+from load.records import DEFAULT_BATCH_SIZE, upsert_records
 
 DAILY_CONFLICT_KEY = "date,respondent"
 HOURLY_CONFLICT_KEY = "period,respondent"
@@ -12,7 +12,7 @@ def upsert_gold(
     table,
     conflict_key,
     label,
-    batch_size=500,
+    batch_size=DEFAULT_BATCH_SIZE,
     timestamp_columns=("period",),
     date_columns=(),
 ):

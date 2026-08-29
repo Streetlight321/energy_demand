@@ -1,27 +1,32 @@
 """Read-only Supabase queries: checkpoints and Gold input back-reads."""
 
-import time
-
-import httpx
 import pandas as pd
 
 from database.client import supabase
+from database.retry import DEFAULT_ATTEMPTS, run_with_retry
 
 BRONZE_TABLE = "bronze_eia_region_data"
 
 
 def get_latest_bronze_period(client=None):
-    """Most recent `period` in Bronze, or None when Bronze is empty."""
+    """Most recent `period` in Bronze, or None when Bronze is empty.
+
+    This is the first call of every scheduled run, so a single stalled
+    connection should not fail the whole job.
+    """
     client = client or supabase
 
-    response = (
-        client
-        .table(BRONZE_TABLE)
-        .select("period")
-        .order("period", desc=True)
-        .limit(1)
-        .execute()
-    )
+    def read():
+        return (
+            client
+            .table(BRONZE_TABLE)
+            .select("period")
+            .order("period", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+    response = run_with_retry(read, description="Bronze checkpoint read")
 
     if not response.data:
         return None
@@ -55,30 +60,21 @@ FORECAST_PERFORMANCE_COLUMNS = [
 PAGE_SIZE = 1000
 
 
-PAGE_RETRIES = 3
-
-RETRY_DELAY_SECONDS = 2
-
-
 def _execute_page(query_factory, offset, page_size):
-    """One page, retried on transient transport errors only."""
-    for attempt in range(1, PAGE_RETRIES + 1):
-        try:
-            return (
-                query_factory()
-                .range(offset, offset + page_size - 1)
-                .execute()
-                .data
-            )
-        except (httpx.TimeoutException, httpx.TransportError) as error:
-            if attempt == PAGE_RETRIES:
-                raise
+    """One page, retried on transient failures by the shared helper."""
+    def read():
+        return (
+            query_factory()
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+        )
 
-            print(
-                f"Supabase read timed out at offset {offset} "
-                f"({type(error).__name__}); retry {attempt}/{PAGE_RETRIES - 1}"
-            )
-            time.sleep(RETRY_DELAY_SECONDS * attempt)
+    return run_with_retry(
+        read,
+        description=f"read at offset {offset}",
+        attempts=DEFAULT_ATTEMPTS,
+    )
 
 
 def _fetch_all(query_factory, page_size=PAGE_SIZE):

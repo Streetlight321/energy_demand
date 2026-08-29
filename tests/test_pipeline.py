@@ -47,10 +47,26 @@ def stubbed(monkeypatch):
         "load_silver_demand",
         "load_silver_generation",
         "load_silver_interchange",
+        "load_gold_demand_daily",
+        "load_gold_forecast_performance_daily",
+        "load_gold_grid_balance_hourly",
+        "load_gold_regional_summary",
     ]:
         recorder = Recorder()
         state["loads"][name] = recorder
         monkeypatch.setattr(pipeline, name, recorder)
+
+    # Gold back-reads must never touch Supabase in unit tests.
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_silver_demand",
+        lambda start, end=None: pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_recent_forecast_performance",
+        lambda start_date: pd.DataFrame(),
+    )
 
     return state
 
@@ -106,12 +122,7 @@ def test_api_is_called_once_for_all_three_silver_domains(
 
     assert calls["count"] == 1
 
-    for name in [
-        "load_bronze",
-        "load_silver_demand",
-        "load_silver_generation",
-        "load_silver_interchange",
-    ]:
+    for name in stubbed["loads"]:
         assert len(stubbed["loads"][name].calls) == 1
 
 
@@ -198,3 +209,94 @@ def test_stale_bronze_run_is_capped_instead_of_pulling_years(
         "start": "2018-12-30T17",
         "end": "2018-12-31T17",
     }
+
+
+def test_gold_runs_from_the_silver_frames_of_this_run(monkeypatch, stubbed):
+    monkeypatch.setattr(
+        pipeline,
+        "get_latest_bronze_period",
+        lambda: "2026-08-29T12:00:00Z",
+    )
+
+    counts = pipeline.run_pipeline()
+
+    assert counts["gold_demand_daily_rows"] == 1
+    assert counts["gold_forecast_performance_rows"] == 1
+    assert counts["gold_grid_balance_rows"] == 1
+    assert counts["gold_regional_summary_rows"] == 1
+
+
+def test_partial_first_day_is_completed_from_silver(monkeypatch):
+    """A window starting mid-day must not overwrite a full day's aggregate."""
+    window = pd.DataFrame(
+        [
+            {
+                "period": pd.Timestamp("2026-08-27T12", tz="UTC"),
+                "respondent": "CAL",
+                "respondent_name": "California",
+                "demand_mwh": 100.0,
+            }
+        ]
+    )
+
+    requested = {}
+
+    def fake_fetch(start, end=None):
+        requested["start"] = start
+        requested["end"] = end
+        return pd.DataFrame(
+            [
+                {
+                    "period": "2026-08-27T03:00:00+00:00",
+                    "respondent": "CAL",
+                    "respondent_name": "California",
+                    "demand_mwh": 80.0,
+                }
+            ]
+        )
+
+    completed = pipeline.complete_partial_first_day(window, fetch=fake_fetch)
+
+    # The head slice covers midnight up to the window start.
+    assert requested["start"] == pd.Timestamp("2026-08-27T00", tz="UTC")
+    assert requested["end"] == pd.Timestamp("2026-08-27T12", tz="UTC")
+    assert len(completed) == 2
+    assert sorted(completed["demand_mwh"]) == [80.0, 100.0]
+
+
+def test_window_already_aligned_to_midnight_skips_the_back_read():
+    window = pd.DataFrame(
+        [
+            {
+                "period": pd.Timestamp("2026-08-27T00", tz="UTC"),
+                "respondent": "CAL",
+                "demand_mwh": 100.0,
+            }
+        ]
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("no back-read needed for a full day")
+
+    completed = pipeline.complete_partial_first_day(window, fetch=explode)
+
+    assert len(completed) == 1
+
+
+def test_recent_forecast_window_requests_seven_days():
+    forecast_df = pd.DataFrame(
+        [
+            {"date": "2026-08-29", "respondent": "CAL"},
+            {"date": "2026-08-28", "respondent": "CAL"},
+        ]
+    )
+
+    requested = {}
+
+    def fake_fetch(start_date):
+        requested["start_date"] = start_date
+        return pd.DataFrame()
+
+    pipeline.recent_forecast_performance(forecast_df, fetch=fake_fetch)
+
+    assert requested["start_date"] == pd.Timestamp("2026-08-23")

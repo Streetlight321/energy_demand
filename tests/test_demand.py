@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from transform.demand import transform_demand, validate_demand
-from transform.validation import SilverValidationError
+from transform.validation import DataQualityError
 
 
 def raw_row(period, respondent, type_code, value):
@@ -140,7 +140,7 @@ def test_validate_demand_catches_duplicate_business_keys():
         * 2
     )
 
-    with pytest.raises(SilverValidationError, match="grain"):
+    with pytest.raises(DataQualityError, match="grain"):
         validate_demand(duplicated)
 
 
@@ -159,7 +159,7 @@ def test_validate_demand_catches_null_business_key():
         ]
     )
 
-    with pytest.raises(SilverValidationError, match="respondent"):
+    with pytest.raises(DataQualityError, match="respondent"):
         validate_demand(frame)
 
 

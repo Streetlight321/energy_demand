@@ -5,7 +5,7 @@ from transform.interchange import (
     transform_interchange,
     validate_interchange,
 )
-from transform.validation import SilverValidationError
+from transform.validation import DataQualityError
 
 
 def raw_row(period, respondent, type_code, value):
@@ -82,7 +82,7 @@ def test_duplicate_grain_is_caught():
         ]
     )
 
-    with pytest.raises(SilverValidationError, match="grain"):
+    with pytest.raises(DataQualityError, match="grain"):
         validate_interchange(transform_interchange(raw))
 
 

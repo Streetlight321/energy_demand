@@ -1,7 +1,7 @@
 # energy_demand
 
 Hourly U.S. EIA electricity region data, ingested into Supabase with a
-Bronze → Silver medallion architecture.
+Bronze → Silver → Gold medallion architecture.
 
 ## Layout
 
@@ -22,8 +22,17 @@ load/                     database writes only
     load_demand.py        silver_demand
     load_generation.py    silver_generation
     load_interchange.py   silver_interchange
+transform/gold/           Silver -> Gold aggregates (pure DataFrame code)
+    demand_daily.py       gold_demand_daily
+    forecast_performance.py   gold_forecast_performance_daily
+    grid_balance.py       gold_grid_balance_hourly
+    regional_summary.py   gold_regional_summary
+load/records.py           shared serialization + batched upsert
+load/gold/                Gold writes only
 scripts/backfill.py       manual historical load (never runs on a schedule)
 sql/silver_tables.sql     Silver DDL (run once in the Supabase SQL editor)
+sql/gold_tables.sql       Gold DDL (run once in the Supabase SQL editor)
+sql/gold_analytics_examples.sql   example analytics + grain sanity checks
 sql/pipeline_runs.sql     optional run-history table (not wired up yet)
 tests/                    unit tests, no API key or database required
 pipeline.py               production orchestration
@@ -35,6 +44,7 @@ pipeline.py               production orchestration
 ```text
 latest Bronze period  ->  minus 48h lookback  ->  paginated EIA query
                       ->  upsert Bronze  ->  transform  ->  upsert Silver
+                      ->  aggregate Gold  ->  upsert Gold
 ```
 
 The 48-hour lookback is deliberate: the EIA revises recent hours and backfills
@@ -53,11 +63,39 @@ than a week behind, a single run is capped at a 7-day catch-up window.
 | Silver | `silver_demand`          | period + respondent (`D`,`DF`) |
 | Silver | `silver_generation`      | period + respondent (`NG`)     |
 | Silver | `silver_interchange`     | period + respondent (`TI`)     |
+| Gold   | `gold_demand_daily`      | date + respondent              |
+| Gold   | `gold_forecast_performance_daily` | date + respondent     |
+| Gold   | `gold_grid_balance_hourly` | period + respondent          |
+| Gold   | `gold_regional_summary`  | respondent                     |
 
 `forecast_error_mwh = demand_mwh - forecast_demand_mwh`, so a positive error
 means actual demand exceeded the day-ahead forecast. `forecast_error_pct` is
 only computed against a positive actual demand; it is null when demand is
 zero or negative, where a percentage would be infinite or sign-flipped.
+
+## Gold layer
+
+Gold is business-ready analytics, recomputed only for the window the run
+touched:
+
+- **`gold_demand_daily`** — daily mean / peak / min / stddev demand. Hourly
+  demand is a rate, so there is deliberately no "daily total" sum.
+- **`gold_forecast_performance_daily`** — MAE, RMSE, MAPE, signed bias and max
+  absolute error, recomputed from actual and forecast demand rather than
+  averaged from Silver's percentage column. MAPE excludes zero-demand hours.
+- **`gold_grid_balance_hourly`** — demand, generation and interchange joined
+  per hour, plus `generation_minus_demand_mwh`. Missing measurements stay
+  null; the metric is named after its arithmetic rather than being labelled
+  surplus/deficit or import/export.
+- **`gold_regional_summary`** — one row per region: the values recorded at
+  that region's latest hour, plus observation-weighted MAPE and bias over the
+  last 7 available days.
+
+Daily Gold is keyed by calendar date, so a window starting mid-day would
+otherwise overwrite a full day's aggregate with a partial one. The pipeline
+back-reads only the missing head of that first day from `silver_demand`
+before aggregating. The trailing day stays partial on purpose — it is still
+accumulating and the next run recomputes it.
 
 ## Validation policy
 

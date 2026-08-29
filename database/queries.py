@@ -1,5 +1,8 @@
 """Read-only Supabase queries: checkpoints and Gold input back-reads."""
 
+import time
+
+import httpx
 import pandas as pd
 
 from database.client import supabase
@@ -52,18 +55,39 @@ FORECAST_PERFORMANCE_COLUMNS = [
 PAGE_SIZE = 1000
 
 
+PAGE_RETRIES = 3
+
+RETRY_DELAY_SECONDS = 2
+
+
+def _execute_page(query_factory, offset, page_size):
+    """One page, retried on transient transport errors only."""
+    for attempt in range(1, PAGE_RETRIES + 1):
+        try:
+            return (
+                query_factory()
+                .range(offset, offset + page_size - 1)
+                .execute()
+                .data
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            if attempt == PAGE_RETRIES:
+                raise
+
+            print(
+                f"Supabase read timed out at offset {offset} "
+                f"({type(error).__name__}); retry {attempt}/{PAGE_RETRIES - 1}"
+            )
+            time.sleep(RETRY_DELAY_SECONDS * attempt)
+
+
 def _fetch_all(query_factory, page_size=PAGE_SIZE):
     """Page through a PostgREST query, which caps rows per response."""
     rows = []
     offset = 0
 
     while True:
-        page = (
-            query_factory()
-            .range(offset, offset + page_size - 1)
-            .execute()
-            .data
-        )
+        page = _execute_page(query_factory, offset, page_size)
 
         if not page:
             break

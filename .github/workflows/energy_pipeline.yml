@@ -1,9 +1,6 @@
 name: Energy pipeline
 
 on:
-  schedule:
-    # 15 minutes past every hour (UTC), after the EIA publishes the hour.
-    - cron: "15 * * * *"
   workflow_dispatch:
 
 # Never let a slow run overlap the next scheduled one.
